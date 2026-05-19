@@ -29,12 +29,13 @@ export async function extractTenant(
     return next();
   }
 
-  const slug = host.replace(`.${baseDomain}`, '');
-
-  if (!slug || slug === host) {
-    res.status(400).json({ success: false, message: 'Invalid tenant subdomain' });
-    return;
+  // Host doesn't belong to our base domain at all (e.g. Railway/custom domain direct access)
+  // Skip tenant extraction — routes will use req.user.orgId from the JWT instead
+  if (!host.endsWith(`.${baseDomain}`)) {
+    return next();
   }
+
+  const slug = host.slice(0, host.length - baseDomain.length - 1);
 
   try {
     const org = await Organization.findOne({ slug, status: 'active' }).lean();
