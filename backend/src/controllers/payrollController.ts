@@ -1,13 +1,34 @@
 import { Request, Response, NextFunction } from 'express';
 import { Types } from 'mongoose';
+import { body, validationResult } from 'express-validator';
 import { Payroll } from '../models/Payroll';
 import { User } from '../models/User';
+import { Branch } from '../models/Branch';
 import { StaffAttendance } from '../models/StaffAttendance';
 import { AppError } from '../utils/errorHandler';
 
+export const createPayrollValidators = [
+  body('staffId').isMongoId(),
+  body('month').matches(/^\d{4}-\d{2}$/).withMessage('month must be YYYY-MM'),
+  body('basicSalary').isFloat({ min: 0 }).withMessage('basicSalary must be non-negative'),
+  body('allowances').optional().isArray(),
+  body('allowances.*.name').optional().trim().notEmpty(),
+  body('allowances.*.amount').optional().isFloat({ min: 0 }),
+  body('deductions').optional().isArray(),
+  body('deductions.*.name').optional().trim().notEmpty(),
+  body('deductions.*.amount').optional().isFloat({ min: 0 }),
+];
+
+export const bulkPayrollValidators = [
+  body('month').matches(/^\d{4}-\d{2}$/).withMessage('month must be YYYY-MM'),
+  body('staffIds').optional().isArray(),
+  body('staffIds.*').optional().isMongoId(),
+];
+
 export async function listPayroll(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { month, staffId, status } = req.query;
+    const { month, staffId, status, page = '1', limit = '30' } = req.query;
+    const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
     const filter: Record<string, unknown> = { orgId: req.orgId, branchId: req.user!.branchId };
     if (month) filter['month'] = month;
     if (staffId) filter['staffId'] = staffId;
@@ -16,18 +37,26 @@ export async function listPayroll(req: Request, res: Response, next: NextFunctio
     // Teacher can only see own payroll
     if (req.user!.role === 'teacher') filter['staffId'] = req.user!.id;
 
-    const payrolls = await Payroll.find(filter)
-      .populate('staffId', 'name email role profile')
-      .populate('approvedById', 'name')
-      .sort({ createdAt: -1 })
-      .lean();
+    const [payrolls, total] = await Promise.all([
+      Payroll.find(filter)
+        .populate('staffId', 'name email role profile')
+        .populate('approvedById', 'name')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit as string))
+        .lean(),
+      Payroll.countDocuments(filter),
+    ]);
 
-    res.json({ success: true, data: payrolls });
+    res.json({ success: true, data: payrolls, meta: { total, page: parseInt(page as string) } });
   } catch (err) { next(err); }
 }
 
 export async function createPayroll(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) { res.status(422).json({ success: false, errors: errors.array() }); return; }
+
     const { staffId, month, basicSalary, allowances = [], deductions = [] } = req.body;
     const orgId = req.orgId;
     const branchId = req.user!.branchId;
@@ -50,7 +79,10 @@ export async function createPayroll(req: Request, res: Response, next: NextFunct
     }).lean();
 
     const absentDays = staffAttendance.length;
-    const workingDays = 26; // configurable default
+    const branchDoc = await Branch.findOne({ orgId, _id: branchId }).select('settings').lean();
+    // Use count of configured working days * 4.33 weeks, defaulting to 26
+    const configuredDays = branchDoc?.settings?.workingDays?.length;
+    const workingDays = configuredDays ? Math.round(configuredDays * 4.33) : 26;
     const dailyRate = basicSalary / workingDays;
     const absentDeduction = Math.round(dailyRate * absentDays);
 
@@ -135,6 +167,9 @@ export async function markPaid(req: Request, res: Response, next: NextFunction):
 
 export async function bulkProcessPayroll(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) { res.status(422).json({ success: false, errors: errors.array() }); return; }
+
     const { month, staffIds } = req.body;
     if (!month) throw new AppError('month is required (YYYY-MM)', 400);
 
@@ -143,13 +178,13 @@ export async function bulkProcessPayroll(req: Request, res: Response, next: Next
 
     // Get all branch staff
     const staffFilter: Record<string, unknown> = {
-      branchId,
+      orgId: new Types.ObjectId(orgId!),
+      branchId: new Types.ObjectId(branchId!),
       role: { $in: ['teacher', 'branch_principal', 'accountant', 'it_admin'] },
       active: true,
     };
     if (staffIds?.length) staffFilter['_id'] = { $in: staffIds };
 
-    // Use raw query since User has no orgId for super_admin but staff do
     const User_ = User;
     const staff = await User_.find(staffFilter).select('_id').lean();
 

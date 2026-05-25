@@ -12,6 +12,7 @@ export interface IOrganization extends Document {
   contactPhone?: string;
   address?: string;
   logoUrl?: string;
+  welcomeMessage?: string;
   settings: {
     timezone: string;
     currency: string;
@@ -37,6 +38,7 @@ const organizationSchema = new Schema<IOrganization>(
     contactPhone: String,
     address: String,
     logoUrl: String,
+    welcomeMessage: { type: String, trim: true },
     settings: {
       timezone: { type: String, default: 'Asia/Karachi' },
       currency: { type: String, default: 'PKR' },
@@ -52,7 +54,6 @@ const organizationSchema = new Schema<IOrganization>(
   { timestamps: true }
 );
 
-organizationSchema.index({ slug: 1 }, { unique: true });
 organizationSchema.index({ status: 1 });
 
 export const Organization = model<IOrganization>('Organization', organizationSchema);

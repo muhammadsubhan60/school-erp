@@ -64,4 +64,7 @@ const examSchema = new Schema<IExam>(
 examSchema.index({ orgId: 1, branchId: 1 });
 examSchema.index({ orgId: 1, branchId: 1, academicYearId: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+examSchema.plugin(tenantPlugin);
+
 export const Exam = model<IExam>('Exam', examSchema);

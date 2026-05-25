@@ -8,6 +8,7 @@ import {
   getOrganization,
   updateOrganization,
   getUsageMetrics,
+  getLogoUploadUrl,
 } from '../controllers/organizationController';
 
 const router = Router();
@@ -22,5 +23,6 @@ router.get('/usage-metrics', requireSuperAdmin, getUsageMetrics);
 // Super-admin OR group_admin for their own org (controller enforces scoping)
 router.get('/:id', getOrganization);
 router.put('/:id', updateOrganization);
+router.post('/:id/upload-logo', getLogoUploadUrl);
 
 export default router;

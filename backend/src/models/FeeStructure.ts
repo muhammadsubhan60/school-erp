@@ -44,4 +44,7 @@ const feeStructureSchema = new Schema<IFeeStructure>(
 feeStructureSchema.index({ orgId: 1, branchId: 1 });
 feeStructureSchema.index({ orgId: 1, branchId: 1, classId: 1, academicYearId: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+feeStructureSchema.plugin(tenantPlugin);
+
 export const FeeStructure = model<IFeeStructure>('FeeStructure', feeStructureSchema);

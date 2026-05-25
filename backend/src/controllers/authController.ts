@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
-import bcrypt from 'bcryptjs';
+import mongoose from 'mongoose';
+import { env } from '../config/env';
 import { User } from '../models/User';
 import { Organization } from '../models/Organization';
 import { Branch } from '../models/Branch';
@@ -11,6 +12,22 @@ import {
   storeRefreshToken,
   rotateRefreshToken,
 } from '../services/authService';
+import { withoutTenantEnforcement } from '../utils/tenantPlugin';
+
+const ACCESS_COOKIE_OPTS = {
+  httpOnly: true,
+  secure: !env.isDev,
+  sameSite: 'strict' as const,
+  maxAge: 15 * 60 * 1000,
+};
+
+const REFRESH_COOKIE_OPTS = {
+  httpOnly: true,
+  secure: !env.isDev,
+  sameSite: 'strict' as const,
+  path: '/api/auth/refresh',
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+};
 
 export const loginValidators = [
   body('email').isEmail().normalizeEmail(),
@@ -24,10 +41,39 @@ export async function login(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const { email, password } = req.body;
+  const { email, password, slug, loginAs } = req.body;
+
+  // loginAs = 'admin' | 'teacher' — defines which role group the user claims.
+  // Validated after credential check so we don't leak which roles exist.
+  const ROLE_GROUPS: Record<string, string[]> = {
+    admin:   ['group_admin', 'branch_principal', 'coordinator', 'accountant', 'it_admin'],
+    teacher: ['teacher'],
+    student: ['student'],
+  };
+  const ROLE_LABELS: Record<string, string> = {
+    admin:   'Staff / Admin',
+    teacher: 'Teacher',
+    student: 'Student',
+  };
 
   try {
-    const user = await User.findOne({ email, active: true }).select('+passwordHash');
+    // Resolve slug → orgId, reject suspended orgs
+    let orgId: string | undefined;
+    if (slug) {
+      const org = await Organization.findOne({ slug: String(slug).toLowerCase() }).select('_id status').lean();
+      if (!org || org.status === 'suspended') {
+        res.status(401).json({ success: false, message: 'Invalid credentials' });
+        return;
+      }
+      orgId = org._id.toString();
+    }
+
+    const query: Record<string, unknown> = { email, active: true };
+    if (orgId) query.orgId = orgId;
+
+    const user = await withoutTenantEnforcement(
+      User.findOne(query).select('+passwordHash')
+    );
     if (!user) {
       res.status(401).json({ success: false, message: 'Invalid credentials' });
       return;
@@ -36,6 +82,21 @@ export async function login(req: Request, res: Response): Promise<void> {
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       res.status(401).json({ success: false, message: 'Invalid credentials' });
+      return;
+    }
+
+    // Role-group check — after credential verification so timing doesn't leak user existence
+    if (loginAs && ROLE_GROUPS[loginAs] && !ROLE_GROUPS[loginAs].includes(user.role)) {
+      const expected = ROLE_LABELS[loginAs] ?? loginAs;
+      res.status(403).json({
+        success: false,
+        message: `This account is not registered as ${expected}. Please select the correct role and try again.`,
+      });
+      return;
+    }
+
+    if (user.mustChangePassword) {
+      res.status(200).json({ success: true, mustChangePassword: true, message: 'Password change required' });
       return;
     }
 
@@ -51,6 +112,9 @@ export async function login(req: Request, res: Response): Promise<void> {
 
     await storeRefreshToken(user.id, tokens.refreshToken);
 
+    res.cookie('accessToken', tokens.accessToken, ACCESS_COOKIE_OPTS);
+    res.cookie('refreshToken', tokens.refreshToken, REFRESH_COOKIE_OPTS);
+
     res.json({
       success: true,
       data: {
@@ -63,24 +127,32 @@ export async function login(req: Request, res: Response): Promise<void> {
           branchId: user.branchId,
           profilePhotoUrl: user.profilePhotoUrl,
         },
-        ...tokens,
       },
     });
   } catch (err) {
+    console.error('[login]', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 }
 
 export async function logout(req: Request, res: Response): Promise<void> {
-  const authHeader = req.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) {
-    await blacklistToken(authHeader.slice(7));
-  }
+  // Blacklist the access token (from cookie or header)
+  const token =
+    (req.cookies as Record<string, string> | undefined)?.accessToken ??
+    req.headers.authorization?.slice(7);
+  if (token) await blacklistToken(token);
+
+  res.clearCookie('accessToken');
+  res.clearCookie('refreshToken', { path: '/api/auth/refresh' });
   res.json({ success: true, message: 'Logged out successfully' });
 }
 
 export async function refresh(req: Request, res: Response): Promise<void> {
-  const { refreshToken } = req.body;
+  // Accept token from cookie or body (for backward compat during migration)
+  const refreshToken =
+    (req.cookies as Record<string, string> | undefined)?.refreshToken ??
+    req.body?.refreshToken;
+
   if (!refreshToken) {
     res.status(400).json({ success: false, message: 'Refresh token required' });
     return;
@@ -92,7 +164,10 @@ export async function refresh(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  res.json({ success: true, data: result.tokens });
+  res.cookie('accessToken', result.tokens.accessToken, ACCESS_COOKIE_OPTS);
+  res.cookie('refreshToken', result.tokens.refreshToken, REFRESH_COOKIE_OPTS);
+
+  res.json({ success: true, data: { user: { id: result.user._id.toString(), role: result.user.role } } });
 }
 
 export async function getMe(req: Request, res: Response): Promise<void> {
@@ -132,6 +207,7 @@ export async function changePassword(req: Request, res: Response): Promise<void>
 
   user.passwordHash = await hashPassword(newPassword);
   user.passwordChangedAt = new Date();
+  user.mustChangePassword = false;
   await user.save();
 
   res.json({ success: true, message: 'Password changed successfully' });
@@ -159,7 +235,7 @@ export async function registerOrg(req: Request, res: Response): Promise<void> {
 
   const [existingSlug, existingEmail] = await Promise.all([
     Organization.findOne({ slug }),
-    User.findOne({ email: adminEmail }),
+    withoutTenantEnforcement(User.findOne({ email: adminEmail })),
   ]);
 
   if (existingSlug) {
@@ -167,62 +243,76 @@ export async function registerOrg(req: Request, res: Response): Promise<void> {
     return;
   }
   if (existingEmail) {
-    res.status(409).json({ success: false, message: 'An account with this email already exists.' });
+    // Deliberately vague to prevent email enumeration
+    res.status(409).json({ success: false, message: 'Registration failed. Please verify your details and try again.' });
     return;
   }
 
   const { PlatformSettings } = await import('../models/PlatformSettings');
   const platformSettings = await PlatformSettings.findOne();
   const trialDays = platformSettings?.trialDays ?? 30;
+  const passwordHash = await hashPassword(adminPassword);
 
-  const org = await Organization.create({
-    name: orgName,
-    slug,
-    contactEmail,
-    contactPhone,
-    plan: 'starter',
-    status: 'trial',
-    trialEndsAt: new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000),
-  });
+  const session = await mongoose.startSession();
+  try {
+    const result = await session.withTransaction(async () => {
+      const [org] = await Organization.create([{
+        name: orgName,
+        slug,
+        contactEmail,
+        contactPhone,
+        plan: 'starter',
+        status: 'trial',
+        trialEndsAt: new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000),
+      }], { session });
 
-  const adminUser = await User.create({
-    orgId: org._id,
-    role: 'group_admin',
-    name: adminName,
-    email: adminEmail,
-    passwordHash: await hashPassword(adminPassword),
-    active: true,
-  });
-
-  await Branch.create({
-    orgId: org._id,
-    name: 'Main Branch',
-    code: 'MAIN',
-    address: '-',
-    city: '-',
-  });
-
-  const tokens = generateTokens({
-    userId: adminUser.id,
-    role: 'group_admin',
-    orgId: org._id.toString(),
-  });
-
-  await storeRefreshToken(adminUser.id, tokens.refreshToken);
-
-  res.status(201).json({
-    success: true,
-    data: {
-      user: {
-        id: adminUser.id,
-        name: adminUser.name,
-        email: adminUser.email,
-        role: adminUser.role,
+      const [adminUser] = await User.create([{
         orgId: org._id,
+        role: 'group_admin',
+        name: adminName,
+        email: adminEmail,
+        passwordHash,
+        active: true,
+      }], { session });
+
+      await Branch.create([{
+        orgId: org._id,
+        name: 'Main Branch',
+        code: 'MAIN',
+        address: '-',
+        city: '-',
+      }], { session });
+
+      return { org, adminUser };
+    });
+
+    const { org, adminUser } = result!;
+    const tokens = generateTokens({
+      userId: adminUser._id.toString(),
+      role: 'group_admin',
+      orgId: org._id.toString(),
+    });
+
+    await storeRefreshToken(adminUser._id.toString(), tokens.refreshToken);
+
+    res.cookie('accessToken', tokens.accessToken, ACCESS_COOKIE_OPTS);
+    res.cookie('refreshToken', tokens.refreshToken, REFRESH_COOKIE_OPTS);
+
+    res.status(201).json({
+      success: true,
+      data: {
+        user: {
+          id: adminUser._id.toString(),
+          name: adminUser.name,
+          email: adminUser.email,
+          role: adminUser.role,
+          orgId: org._id,
+        },
+        trialEndsAt: org.trialEndsAt,
+        trialDays,
       },
-      ...tokens,
-      trialEndsAt: org.trialEndsAt,
-      trialDays,
-    },
-  });
+    });
+  } finally {
+    await session.endSession();
+  }
 }

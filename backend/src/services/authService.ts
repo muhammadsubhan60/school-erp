@@ -2,8 +2,10 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { env } from '../config/env';
-import { getRedis } from '../config/redis';
 import { User, IUser, UserRole } from '../models/User';
+import { TokenBlacklist } from '../models/TokenBlacklist';
+import { RefreshToken } from '../models/RefreshToken';
+import { addToBlacklistCache } from '../middleware/auth/authenticate';
 
 interface TokenPair {
   accessToken: string;
@@ -36,15 +38,13 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function blacklistToken(token: string): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return; // Redis not configured — skip blacklisting in dev
-
   const decoded = jwt.decode(token) as { exp?: number } | null;
   if (!decoded?.exp) return;
 
-  const ttl = decoded.exp - Math.floor(Date.now() / 1000);
-  if (ttl > 0) {
-    await redis.setex(`bl:${token}`, ttl, '1');
+  const expiresAt = new Date(decoded.exp * 1000);
+  if (expiresAt > new Date()) {
+    await TokenBlacklist.create({ token, expiresAt });
+    addToBlacklistCache(token, expiresAt);
   }
 }
 
@@ -52,14 +52,15 @@ export async function storeRefreshToken(
   userId: string,
   refreshToken: string
 ): Promise<void> {
-  const redis = getRedis();
-  if (!redis) return;
-
   const decoded = jwt.decode(refreshToken) as { exp?: number; jti?: string } | null;
   if (!decoded?.exp || !decoded?.jti) return;
 
-  const ttl = decoded.exp - Math.floor(Date.now() / 1000);
-  await redis.setex(`rt:${userId}:${decoded.jti}`, ttl, refreshToken);
+  const expiresAt = new Date(decoded.exp * 1000);
+  await RefreshToken.findOneAndUpdate(
+    { userId, jti: decoded.jti },
+    { token: refreshToken, expiresAt },
+    { upsert: true },
+  );
 }
 
 export async function rotateRefreshToken(
@@ -72,12 +73,10 @@ export async function rotateRefreshToken(
     return null;
   }
 
-  const redis = getRedis();
-
-  if (redis && payload.jti) {
-    const stored = await redis.get(`rt:${payload.userId}:${payload.jti}`);
-    if (!stored || stored !== oldToken) return null;
-    await redis.del(`rt:${payload.userId}:${payload.jti}`);
+  if (payload.jti) {
+    const stored = await RefreshToken.findOne({ userId: payload.userId, jti: payload.jti });
+    if (!stored || stored.token !== oldToken) return null;
+    await RefreshToken.deleteOne({ userId: payload.userId, jti: payload.jti });
   }
 
   const user = await User.findById(payload.userId);

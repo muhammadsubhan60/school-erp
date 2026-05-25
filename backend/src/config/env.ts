@@ -15,17 +15,18 @@ export const env = {
     return v;
   })(),
 
-  jwtSecret: optional('JWT_SECRET', 'dev_jwt_secret_please_change_in_production_min32chars'),
-  jwtExpiresIn: optional('JWT_EXPIRES_IN', '15m'),
-  jwtRefreshSecret: optional('JWT_REFRESH_SECRET', 'dev_refresh_secret_please_change_in_production_min32'),
-  jwtRefreshExpiresIn: optional('JWT_REFRESH_EXPIRES_IN', '7d'),
-
-  // Redis is optional in development; if placeholder or missing, auth blacklisting is skipped
-  redisUrl: optional('REDIS_URL', ''),
-  redisEnabled: (() => {
-    const url = optional('REDIS_URL', '');
-    return url !== '' && !url.includes('<password>') && !url.includes('<host>');
+  jwtSecret: (() => {
+    const v = process.env.JWT_SECRET;
+    if (!v || v.length < 32) throw new Error('JWT_SECRET missing or too short (min 32 chars)');
+    return v;
   })(),
+  jwtExpiresIn: optional('JWT_EXPIRES_IN', '15m'),
+  jwtRefreshSecret: (() => {
+    const v = process.env.JWT_REFRESH_SECRET;
+    if (!v || v.length < 32) throw new Error('JWT_REFRESH_SECRET missing or too short (min 32 chars)');
+    return v;
+  })(),
+  jwtRefreshExpiresIn: optional('JWT_REFRESH_EXPIRES_IN', '7d'),
 
   awsRegion: optional('AWS_REGION', 'ap-southeast-1'),
   awsAccessKeyId: optional('AWS_ACCESS_KEY_ID', ''),
@@ -35,11 +36,6 @@ export const env = {
 
   frontendUrl: optional('FRONTEND_URL', 'http://localhost:5173'),
   baseDomain: optional('BASE_DOMAIN', 'edustack.pk'),
+  vercelPreviewUrl: optional('VERCEL_PREVIEW_URL', ''),
 };
 
-if (env.isDev && !env.redisEnabled) {
-  console.warn('[DEV] Redis not configured — token blacklisting disabled. Set REDIS_URL for production.');
-}
-if (env.isDev && env.jwtSecret.startsWith('dev_')) {
-  console.warn('[DEV] Using default JWT secrets — set JWT_SECRET and JWT_REFRESH_SECRET for production.');
-}

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
+import { Types } from 'mongoose';
 import { Attendance } from '../models/Attendance';
 import { Student } from '../models/Student';
 import { Branch } from '../models/Branch';
@@ -35,7 +36,13 @@ export async function markAttendance(req: Request, res: Response): Promise<void>
 }
 
 export async function getAttendance(req: Request, res: Response): Promise<void> {
-  const { orgId, branchId } = req.user!;
+  const { orgId, branchId, role } = req.user!;
+
+  // Students see only their own attendance via the dedicated endpoint
+  if (role === 'student') {
+    return getMyAttendance(req, res);
+  }
+
   const { classId, sectionId, date, startDate, endDate } = req.query;
 
   const filter: Record<string, unknown> = { orgId, branchId };
@@ -76,7 +83,7 @@ export async function getStudentMonthlySummary(req: Request, res: Response): Pro
     orgId,
     branchId,
     date: { $gte: monthStart, $lte: monthEnd },
-    'records.studentId': studentId as string,
+    'records.studentId': new Types.ObjectId(studentId as string),
   }).lean();
 
   let present = 0, absent = 0, late = 0, excused = 0;
@@ -166,32 +173,44 @@ export async function getSectionSummary(req: Request, res: Response): Promise<vo
   const monthStart = new Date(parseInt(year as string), parseInt(month as string) - 1, 1);
   const monthEnd = new Date(parseInt(year as string), parseInt(month as string), 0);
 
-  const students = await Student.find({ orgId, branchId, sectionId: sid, status: 'active' }).lean();
-  const records = await Attendance.find({
-    orgId, branchId, sectionId: sid,
-    date: { $gte: monthStart, $lte: monthEnd },
-  }).lean();
+  const [students, aggResult, branch] = await Promise.all([
+    Student.find({ orgId, branchId, sectionId: sid, status: 'active' }).lean(),
+    Attendance.aggregate([
+      {
+        $match: {
+          orgId: new Types.ObjectId(orgId!),
+          branchId: new Types.ObjectId(branchId!),
+          sectionId: new Types.ObjectId(sid),
+          date: { $gte: monthStart, $lte: monthEnd },
+        },
+      },
+      { $unwind: '$records' },
+      {
+        $group: {
+          _id: '$records.studentId',
+          present: { $sum: { $cond: [{ $eq: ['$records.status', 'present'] }, 1, 0] } },
+          absent: { $sum: { $cond: [{ $eq: ['$records.status', 'absent'] }, 1, 0] } },
+          late: { $sum: { $cond: [{ $eq: ['$records.status', 'late'] }, 1, 0] } },
+          excused: { $sum: { $cond: [{ $eq: ['$records.status', 'excused'] }, 1, 0] } },
+        },
+      },
+    ]),
+    Branch.findOne({ orgId, _id: branchId }).lean(),
+  ]);
 
-  const branch = await Branch.findOne({ orgId, _id: branchId }).lean();
   const threshold = branch?.settings?.attendanceThreshold ?? 75;
+  const statsMap = new Map(aggResult.map(r => [r._id.toString(), r]));
 
   const summary = students.map((student) => {
-    let present = 0, absent = 0, late = 0, excused = 0;
-    for (const att of records) {
-      const r = att.records.find((rec) => String(rec.studentId) === String(student._id));
-      if (!r) continue;
-      if (r.status === 'present') present++;
-      else if (r.status === 'absent') absent++;
-      else if (r.status === 'late') late++;
-      else if (r.status === 'excused') excused++;
-    }
-    const total = present + absent + late + excused;
-    const percentage = total > 0 ? Math.round(((present + late) / total) * 100) : 0;
+    const s = statsMap.get(student._id.toString()) ?? { present: 0, absent: 0, late: 0, excused: 0 };
+    const total = s.present + s.absent + s.late + s.excused;
+    const percentage = total > 0 ? Math.round(((s.present + s.late) / total) * 100) : 0;
     return {
       studentId: student._id,
       name: student.profile.name,
       rollNo: student.rollNo,
-      present, absent, late, excused, total, percentage,
+      present: s.present, absent: s.absent, late: s.late, excused: s.excused,
+      total, percentage,
       isShortage: total > 0 && percentage < threshold,
     };
   });

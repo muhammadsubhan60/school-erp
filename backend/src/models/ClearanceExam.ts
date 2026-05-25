@@ -64,4 +64,7 @@ clearanceExamSchema.index(
   { unique: true }
 );
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+clearanceExamSchema.plugin(tenantPlugin);
+
 export const ClearanceExam = model<IClearanceExam>('ClearanceExam', clearanceExamSchema);

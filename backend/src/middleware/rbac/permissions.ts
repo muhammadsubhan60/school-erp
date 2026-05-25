@@ -19,7 +19,8 @@ type Module =
   | 'reports'
   | 'system_settings'
   | 'sop'
-  | 'academic_intelligence';
+  | 'academic_intelligence'
+  | 'exam_paper';
 
 type PermissionRule = {
   roles: UserRole[];
@@ -53,6 +54,7 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
     { roles: ['super_admin'], actions: ['read'] },
     { roles: ['group_admin'], actions: ['read'] },
     { roles: ['branch_principal'], actions: ['create', 'read', 'update', 'delete'] },
+    { roles: ['coordinator'], actions: ['create', 'read', 'update', 'delete'] },
     { roles: ['teacher'], actions: ['read'] },
     { roles: ['student'], actions: ['read'], own: true },
   ],
@@ -60,6 +62,7 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
   attendance: [
     { roles: ['group_admin'], actions: ['read'] },
     { roles: ['branch_principal'], actions: ['read'] },
+    { roles: ['coordinator'], actions: ['create', 'read', 'update', 'delete', 'mark'] },
     { roles: ['teacher'], actions: ['mark', 'read'] },
     { roles: ['student'], actions: ['read'], own: true },
   ],
@@ -73,7 +76,8 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
 
   timetable: [
     { roles: ['group_admin'], actions: ['read'] },
-    { roles: ['branch_principal'], actions: ['create', 'read', 'update', 'delete'] },
+    { roles: ['branch_principal', 'it_admin'], actions: ['create', 'read', 'update', 'delete'] },
+    { roles: ['coordinator'], actions: ['read'] },
     { roles: ['teacher'], actions: ['read'] },
     { roles: ['student'], actions: ['read'] },
   ],
@@ -81,6 +85,7 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
   exams: [
     { roles: ['group_admin'], actions: ['read'] },
     { roles: ['branch_principal'], actions: ['create', 'read', 'update', 'delete'] },
+    { roles: ['coordinator'], actions: ['create', 'read', 'update', 'delete'] },
     { roles: ['teacher'], actions: ['read'] },
     { roles: ['student'], actions: ['read'], own: true },
   ],
@@ -94,6 +99,7 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
 
   assignments: [
     { roles: ['branch_principal'], actions: ['read'] },
+    { roles: ['coordinator'], actions: ['read', 'mark'] },
     { roles: ['teacher'], actions: ['create', 'read', 'update', 'delete', 'mark'] },
     { roles: ['student'], actions: ['read', 'submit'], own: true },
   ],
@@ -117,6 +123,7 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
     { roles: ['super_admin'], actions: ['send', 'read'] },
     { roles: ['group_admin'], actions: ['send', 'read'] },
     { roles: ['branch_principal'], actions: ['send', 'read'] },
+    { roles: ['coordinator'], actions: ['send', 'read'] },
     { roles: ['teacher'], actions: ['send', 'read'] },
     { roles: ['student'], actions: ['read'] },
     { roles: ['accountant'], actions: ['read'] },
@@ -152,6 +159,13 @@ export const PERMISSIONS: Record<Module, PermissionRule[]> = {
     { roles: ['teacher'], actions: ['create', 'read', 'update', 'mark', 'approve'] },
     { roles: ['student'], actions: ['read'], own: true },
     { roles: ['it_admin'], actions: ['create', 'read', 'update', 'delete', 'configure'] },
+  ],
+
+  exam_paper: [
+    { roles: ['branch_principal'], actions: ['read', 'create', 'update', 'submit', 'approve', 'configure'] },
+    { roles: ['coordinator'], actions: ['read', 'create', 'update', 'delete', 'submit', 'approve'] },
+    { roles: ['teacher'], actions: ['read', 'create', 'update', 'delete', 'submit'] },
+    { roles: ['it_admin'], actions: ['read', 'configure'] },
   ],
 };
 

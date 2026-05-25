@@ -96,8 +96,11 @@ const studentSchema = new Schema<IStudent>(
 
 studentSchema.index({ orgId: 1, branchId: 1 });
 studentSchema.index({ orgId: 1, branchId: 1, classId: 1, sectionId: 1 });
-studentSchema.index({ orgId: 1, branchId: 1, rollNo: 1 });
+studentSchema.index({ orgId: 1, branchId: 1, classId: 1, sectionId: 1, rollNo: 1 }, { unique: true });
 studentSchema.index({ orgId: 1, branchId: 1, status: 1 });
 studentSchema.index({ orgId: 1, admissionNo: 1 }, { unique: true });
+
+import { tenantPlugin } from '../utils/tenantPlugin';
+studentSchema.plugin(tenantPlugin);
 
 export const Student = model<IStudent>('Student', studentSchema);

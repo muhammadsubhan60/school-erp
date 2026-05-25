@@ -1,9 +1,27 @@
 import { Request, Response, NextFunction } from 'express';
 import { Types } from 'mongoose';
+import { randomBytes } from 'crypto';
+import { body, validationResult } from 'express-validator';
 import { FeeStructure } from '../models/FeeStructure';
 import { Challan } from '../models/Challan';
 import { Student } from '../models/Student';
 import { AppError } from '../utils/errorHandler';
+
+export const createFeeStructureValidators = [
+  body('name').trim().notEmpty().withMessage('Name is required'),
+  body('classId').isMongoId(),
+  body('academicYearId').isMongoId(),
+  body('items').isArray({ min: 1 }).withMessage('At least one fee item is required'),
+  body('items.*.name').trim().notEmpty(),
+  body('items.*.amount').isFloat({ min: 0 }),
+  body('dueDay').optional().isInt({ min: 1, max: 28 }),
+];
+
+export const recordPaymentValidators = [
+  body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be positive'),
+  body('method').isIn(['cash', 'bank_transfer', 'jazzcash', 'easypaisa', 'cheque']),
+  body('transactionRef').optional().trim(),
+];
 
 // ─── Fee Structures ────────────────────────────────────────────────────────
 
@@ -26,6 +44,9 @@ export async function listFeeStructures(req: Request, res: Response, next: NextF
 
 export async function createFeeStructure(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) { res.status(422).json({ success: false, errors: errors.array() }); return; }
+
     const { classId, academicYearId, name, items, dueDay } = req.body;
     const totalAmount = (items as { amount: number }[]).reduce((sum, i) => sum + i.amount, 0);
 
@@ -120,74 +141,26 @@ export async function getChallan(req: Request, res: Response, next: NextFunction
 
 export async function generateChallans(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const { month, classId } = req.body; // month = "2025-06"
+    const { month, classId } = req.body;
     if (!month) throw new AppError('month is required (YYYY-MM)', 400);
 
-    const branchId = req.user!.branchId;
-    const orgId = req.orgId;
+    const { dispatchChallanJob } = await import('../jobs');
+    await dispatchChallanJob({
+      orgId: req.orgId,
+      branchId: req.user!.branchId,
+      month,
+      classId,
+    });
 
-    // Find fee structures for branch
-    const structureFilter: Record<string, unknown> = { orgId, branchId, isActive: true };
-    if (classId) structureFilter['classId'] = classId;
-    const structures = await FeeStructure.find(structureFilter).lean();
-    if (structures.length === 0) throw new AppError('No active fee structures found', 400);
-
-    const structureMap = new Map(structures.map(s => [s.classId.toString(), s]));
-
-    // Find active students
-    const studentFilter: Record<string, unknown> = { orgId, branchId, status: 'active' };
-    if (classId) studentFilter['classId'] = classId;
-    const students = await Student.find(studentFilter).select('_id classId').lean();
-
-    // Get last challan number to continue sequence
-    const lastChallan = await Challan.findOne({ orgId }).sort({ createdAt: -1 }).select('challanNo').lean();
-    let challanSeq = lastChallan?.challanNo
-      ? parseInt(lastChallan.challanNo.replace(/\D/g, '')) + 1
-      : 1001;
-
-    const [year, m] = month.split('-');
-    const dueDate = new Date(parseInt(year), parseInt(m) - 1, 10); // 10th of that month
-
-    let created = 0;
-    let skipped = 0;
-
-    for (const student of students) {
-      const structure = structureMap.get(student.classId.toString());
-      if (!structure) { skipped++; continue; }
-
-      // Skip if challan already exists for this student+month
-      const exists = await Challan.findOne({ orgId, studentId: student._id, month }).lean();
-      if (exists) { skipped++; continue; }
-
-      const netAmount = structure.totalAmount;
-      await Challan.create({
-        orgId,
-        branchId,
-        studentId: student._id,
-        classId: student.classId,
-        feeStructureId: structure._id,
-        month,
-        challanNo: `CH-${year}-${String(challanSeq).padStart(5, '0')}`,
-        items: structure.items,
-        totalAmount: structure.totalAmount,
-        discount: 0,
-        waiver: 0,
-        netAmount,
-        paidAmount: 0,
-        dueDate,
-        status: 'unpaid',
-        payments: [],
-      });
-      challanSeq++;
-      created++;
-    }
-
-    res.status(201).json({ success: true, data: { created, skipped }, message: `Generated ${created} challans, skipped ${skipped}` });
+    res.status(202).json({ success: true, message: 'Challan generation queued. Check back in a moment.' });
   } catch (err) { next(err); }
 }
 
 export async function recordPayment(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) { res.status(422).json({ success: false, errors: errors.array() }); return; }
+
     const { amount, method, transactionRef } = req.body;
     const challan = await Challan.findOne({ _id: req.params['id'], orgId: req.orgId });
     if (!challan) throw new AppError('Challan not found', 404);
@@ -195,7 +168,7 @@ export async function recordPayment(req: Request, res: Response, next: NextFunct
       throw new AppError('Challan is already settled', 400);
     }
 
-    const receiptNo = `RCP-${Date.now()}`;
+    const receiptNo = `RCP-${Date.now()}-${randomBytes(3).toString('hex').toUpperCase()}`;
     challan.payments.push({
       amount,
       method,
@@ -245,7 +218,9 @@ export async function applyWaiver(req: Request, res: Response, next: NextFunctio
 export async function getFeeSummary(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
     const { month } = req.query;
-    const match: Record<string, unknown> = { orgId: req.orgId, branchId: req.user!.branchId };
+    // aggregate() does NOT auto-cast strings to ObjectIds — must cast explicitly
+    const match: Record<string, unknown> = { orgId: new Types.ObjectId(req.orgId!) };
+    if (req.user!.branchId) match['branchId'] = new Types.ObjectId(req.user!.branchId);
     if (month) match['month'] = month;
 
     const summary = await Challan.aggregate([

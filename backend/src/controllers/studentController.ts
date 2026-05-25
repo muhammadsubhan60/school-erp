@@ -1,21 +1,31 @@
 import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
+import mongoose from 'mongoose';
+import { randomBytes } from 'crypto';
 import { Student } from '../models/Student';
 import { User } from '../models/User';
+import { Sequence } from '../models/Sequence';
 import { hashPassword } from '../services/authService';
 import { getUploadUrl, getPublicUrl } from '../services/s3Service';
 
-// Auto-generate roll number: CLASS_CODE + SECTION_CODE + YEAR + SEQ
-async function generateRollNumber(orgId: string, branchId: string, classId: string, sectionId: string, academicYearId: string): Promise<string> {
-  const count = await Student.countDocuments({ orgId, branchId, classId, sectionId, academicYearId });
-  const seq = String(count + 1).padStart(3, '0');
-  const yearSuffix = new Date().getFullYear().toString().slice(-2);
-  return `${yearSuffix}${seq}`;
+async function generateRollNumber(orgId: string, classId: string, sectionId: string, academicYearId: string): Promise<string> {
+  const key = `roll:${classId}:${sectionId}:${academicYearId}`;
+  const seq = await Sequence.findOneAndUpdate(
+    { orgId, key },
+    { $inc: { value: 1 } },
+    { upsert: true, new: true }
+  );
+  return String(seq!.value).padStart(3, '0');
 }
 
 async function generateAdmissionNumber(orgId: string): Promise<string> {
-  const count = await Student.countDocuments({ orgId });
-  return `ADM-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+  const year = new Date().getFullYear();
+  const seq = await Sequence.findOneAndUpdate(
+    { orgId, key: `admission:${year}` },
+    { $inc: { value: 1 } },
+    { upsert: true, new: true }
+  );
+  return `${year}-${String(seq!.value).padStart(4, '0')}`;
 }
 
 export const createStudentValidators = [
@@ -38,48 +48,59 @@ export async function createStudent(req: Request, res: Response): Promise<void> 
   const { orgId, branchId } = req.user!;
   const { profile, guardianInfo, classId, sectionId, academicYearId, email, previousSchool, admissionDate } = req.body;
 
-  const existing = await User.findOne({ email });
+  const existing = await User.findOne({ email, orgId });
   if (existing) { res.status(409).json({ success: false, message: 'Email already in use' }); return; }
 
-  const rollNo = await generateRollNumber(orgId!, branchId!, classId, sectionId, academicYearId);
+  const rollNo = await generateRollNumber(orgId!, classId, sectionId, academicYearId);
   const admissionNo = await generateAdmissionNumber(orgId!);
+  const tempPassword = randomBytes(6).toString('base64url');
+  const passwordHash = await hashPassword(tempPassword);
 
-  const tempPassword = `${profile.name.split(' ')[0].toLowerCase()}@${new Date(profile.dateOfBirth).getFullYear()}`;
+  const session = await mongoose.startSession();
+  try {
+    const created = await session.withTransaction(async () => {
+      const [newUser] = await User.create([{
+        orgId,
+        branchId,
+        role: 'student',
+        name: profile.name,
+        email,
+        passwordHash,
+        mustChangePassword: true,
+        active: true,
+      }], { session });
 
-  const userDoc = await User.create({
-    orgId,
-    branchId,
-    role: 'student',
-    name: profile.name,
-    email,
-    passwordHash: await hashPassword(tempPassword),
-    active: true,
-  });
+      const [newStudent] = await Student.create([{
+        orgId,
+        branchId,
+        userId: newUser._id,
+        classId,
+        sectionId,
+        academicYearId,
+        rollNo,
+        admissionNo,
+        profile,
+        guardianInfo,
+        status: 'enrolled',
+        previousSchool,
+        admissionDate: admissionDate ?? new Date(),
+      }], { session });
 
-  const student = await Student.create({
-    orgId,
-    branchId,
-    userId: userDoc._id,
-    classId,
-    sectionId,
-    academicYearId,
-    rollNo,
-    admissionNo,
-    profile,
-    guardianInfo,
-    status: 'enrolled',
-    previousSchool,
-    admissionDate: admissionDate ?? new Date(),
-  });
+      return { userId: newUser.id, student: newStudent };
+    });
 
-  res.status(201).json({
-    success: true,
-    data: { student, tempPassword, userId: userDoc.id },
-  });
+    res.status(201).json({
+      success: true,
+      // tempPassword returned once — never stored in plain text again
+      data: { student: created?.student, tempPassword, userId: created?.userId },
+    });
+  } finally {
+    await session.endSession();
+  }
 }
 
 export async function listStudents(req: Request, res: Response): Promise<void> {
-  const { orgId, branchId } = req.user!;
+  const { orgId, branchId, role } = req.user!;
   const { classId, sectionId, academicYearId, status, page = '1', limit = '30' } = req.query;
   const skip = (parseInt(page as string) - 1) * parseInt(limit as string);
 
@@ -88,6 +109,9 @@ export async function listStudents(req: Request, res: Response): Promise<void> {
   if (sectionId) filter.sectionId = sectionId;
   if (academicYearId) filter.academicYearId = academicYearId;
   if (status) filter.status = status;
+
+  // Students can only see their own record
+  if (role === 'student') filter.userId = req.user!.id;
 
   const [students, total] = await Promise.all([
     Student.find(filter)
@@ -132,6 +156,9 @@ export async function getDocumentUploadUrl(req: Request, res: Response): Promise
     return;
   }
 
+  const owned = await Student.findOne({ _id: req.params.id, orgId: req.orgId }).lean();
+  if (!owned) { res.status(404).json({ success: false, message: 'Student not found' }); return; }
+
   const result = await getUploadUrl(`students/${req.params.id}/documents`, filename, contentType);
 
   if (!result) {
@@ -157,7 +184,7 @@ export async function addDocument(req: Request, res: Response): Promise<void> {
 }
 
 export async function getMyProfile(req: Request, res: Response): Promise<void> {
-  const student = await Student.findOne({ userId: req.user!.id })
+  const student = await Student.findOne({ userId: req.user!.id, orgId: req.orgId })
     .populate('classId', 'name level')
     .populate('sectionId', 'name');
 

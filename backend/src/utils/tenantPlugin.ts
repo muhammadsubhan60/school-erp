@@ -8,6 +8,9 @@ import { Schema, Query } from 'mongoose';
 export function tenantPlugin(schema: Schema): void {
   // Ensure orgId is always present before executing queries
   const enforceOrgId = function (this: Query<unknown, unknown>) {
+    const opts = this.getOptions() as { _skipTenantCheck?: boolean };
+    if (opts._skipTenantCheck) return;
+
     const filter = this.getFilter();
     if (!filter.orgId && !filter._id) {
       throw new Error(

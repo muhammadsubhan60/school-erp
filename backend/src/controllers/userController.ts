@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
 import { User, UserRole } from '../models/User';
 import { hashPassword } from '../services/authService';
+import { withoutTenantEnforcement } from '../utils/tenantPlugin';
 
 const CREATABLE_ROLES: Partial<Record<UserRole, UserRole[]>> = {
   group_admin: ['branch_principal', 'teacher', 'accountant', 'it_admin'],
@@ -33,7 +34,7 @@ export async function createUser(req: Request, res: Response): Promise<void> {
 
   const orgId = req.user!.orgId;
 
-  const existing = await User.findOne({ email });
+  const existing = await withoutTenantEnforcement(User.findOne({ email }));
   if (existing) {
     res.status(409).json({ success: false, message: 'Email already registered' });
     return;

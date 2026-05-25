@@ -39,4 +39,7 @@ assignmentSchema.index({ orgId: 1, branchId: 1 });
 assignmentSchema.index({ orgId: 1, branchId: 1, classId: 1, sectionId: 1 });
 assignmentSchema.index({ orgId: 1, branchId: 1, dueDate: -1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+assignmentSchema.plugin(tenantPlugin);
+
 export const Assignment = model<IAssignment>('Assignment', assignmentSchema);

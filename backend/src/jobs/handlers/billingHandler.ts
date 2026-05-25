@@ -1,23 +1,18 @@
 import { Organization } from '../../models/Organization';
-import { Branch } from '../../models/Branch';
-import { Student } from '../../models/Student';
 import { Attendance } from '../../models/Attendance';
 import { UsageMetric } from '../../models/UsageMetric';
+import { PlatformSettings } from '../../models/PlatformSettings';
 
-const PRICING: Record<string, { limit: number; rate: number }[]> = {
+const DEFAULT_PRICING: Record<string, { limit: number; rate: number }[]> = {
   starter: [{ limit: 150, rate: 50 }],
   growth: [{ limit: 150, rate: 50 }, { limit: 350, rate: 40 }],
   scale: [{ limit: 150, rate: 50 }, { limit: 350, rate: 40 }, { limit: 500, rate: 30 }],
 };
 
-function getRateForCount(plan: string, count: number): number {
-  const tiers = PRICING[plan] ?? PRICING.starter;
+function getRateForCount(tiers: { limit: number; rate: number }[], count: number): number {
   let rate = tiers[0].rate;
   for (const tier of tiers) {
-    if (count <= tier.limit) {
-      rate = tier.rate;
-      break;
-    }
+    if (count <= tier.limit) { rate = tier.rate; break; }
   }
   return rate;
 }
@@ -25,48 +20,75 @@ function getRateForCount(plan: string, count: number): number {
 export async function countActiveStudents(): Promise<void> {
   const now = new Date();
   const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
 
-  const orgs = await Organization.find({ status: 'active' }).lean();
+  // Pull pricing from platform settings; fall back to defaults
+  const settings = await PlatformSettings.findOne().lean();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pricingConfig = (settings as any)?.pricingTiers ?? DEFAULT_PRICING;
 
-  for (const org of orgs) {
-    const branches = await Branch.find({ orgId: org._id, status: 'active' }).lean();
+  // Single aggregation across all orgs/branches
+  const results = await Attendance.aggregate([
+    { $match: { date: { $gte: monthStart, $lte: monthEnd } } },
+    { $unwind: '$records' },
+    {
+      $group: {
+        _id: { orgId: '$orgId', branchId: '$branchId' },
+        activeStudents: { $addToSet: '$records.studentId' },
+      },
+    },
+    {
+      $project: {
+        orgId: '$_id.orgId',
+        branchId: '$_id.branchId',
+        activeCount: { $size: '$activeStudents' },
+      },
+    },
+  ]);
 
-    for (const branch of branches) {
-      // Active = status active AND has at least 1 attendance record this month
-      const studentsWithAttendance = await Attendance.distinct('records.studentId', {
-        orgId: org._id,
-        branchId: branch._id,
-        date: { $gte: monthStart, $lte: monthEnd },
-      });
-
-      const activeCount = studentsWithAttendance.length;
-      const rate = getRateForCount(org.plan, activeCount);
-      const total = activeCount * rate;
-
-      await UsageMetric.findOneAndUpdate(
-        { orgId: org._id, branchId: branch._id, month },
-        {
-          orgId: org._id,
-          branchId: branch._id,
-          month,
-          activeStudents: activeCount,
-          plan: org.plan,
-          ratePerStudent: rate,
-          totalAmount: total,
-          generatedAt: new Date(),
-        },
-        { upsert: true, new: true }
-      );
-    }
-
-    // Update org-level total
-    await Organization.findByIdAndUpdate(org._id, {
-      'usageBilling.lastCountedAt': new Date(),
-    });
+  if (results.length === 0) {
+    console.log(`[BillingJob] No attendance data for ${month}`);
+    return;
   }
 
-  console.log(`[BillingJob] Active student count completed for month ${month}`);
+  // Fetch org plans for rate calculation
+  const orgIds = [...new Set(results.map(r => r.orgId.toString()))];
+  const orgs = await Organization.find({ _id: { $in: orgIds } }).select('plan').lean();
+  const orgPlanMap = new Map(orgs.map(o => [o._id.toString(), o.plan]));
+
+  const bulkOps = results.map(r => {
+    const plan = orgPlanMap.get(r.orgId.toString()) ?? 'starter';
+    const tiers = pricingConfig[plan] ?? pricingConfig.starter ?? DEFAULT_PRICING.starter;
+    const rate = getRateForCount(tiers, r.activeCount);
+
+    return {
+      updateOne: {
+        filter: { orgId: r.orgId, branchId: r.branchId, month },
+        update: {
+          $set: {
+            orgId: r.orgId,
+            branchId: r.branchId,
+            month,
+            activeStudents: r.activeCount,
+            plan,
+            ratePerStudent: rate,
+            totalAmount: r.activeCount * rate,
+            generatedAt: new Date(),
+          },
+        },
+        upsert: true,
+      },
+    };
+  });
+
+  await UsageMetric.bulkWrite(bulkOps);
+
+  // Update org-level billing timestamps in one go
+  await Organization.updateMany(
+    { _id: { $in: orgIds } },
+    { 'usageBilling.lastCountedAt': new Date() }
+  );
+
+  console.log(`[BillingJob] Active student count completed for ${month} — ${results.length} branch(es) updated`);
 }

@@ -42,4 +42,7 @@ const submissionSchema = new Schema<ISubmission>(
 submissionSchema.index({ orgId: 1, branchId: 1, assignmentId: 1 });
 submissionSchema.index({ assignmentId: 1, studentId: 1 }, { unique: true });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+submissionSchema.plugin(tenantPlugin);
+
 export const Submission = model<ISubmission>('Submission', submissionSchema);

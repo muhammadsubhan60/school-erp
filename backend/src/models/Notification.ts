@@ -6,6 +6,7 @@ export type NotificationType =
   | 'assignment_graded'
   | 'assignment_created'
   | 'broadcast'
+  | 'resource_uploaded'
   | 'system';
 
 export interface INotification extends Document {
@@ -31,7 +32,7 @@ const notificationSchema = new Schema<INotification>(
     senderId: { type: Schema.Types.ObjectId, ref: 'User' },
     type: {
       type: String,
-      enum: ['fee_due', 'result_published', 'assignment_graded', 'assignment_created', 'broadcast', 'system'],
+      enum: ['fee_due', 'result_published', 'assignment_graded', 'assignment_created', 'broadcast', 'resource_uploaded', 'system'],
       required: true,
     },
     title: { type: String, required: true },
@@ -46,5 +47,8 @@ const notificationSchema = new Schema<INotification>(
 
 notificationSchema.index({ orgId: 1, branchId: 1, recipientId: 1, isRead: 1 });
 notificationSchema.index({ orgId: 1, branchId: 1, recipientId: 1, createdAt: -1 });
+
+import { tenantPlugin } from '../utils/tenantPlugin';
+notificationSchema.plugin(tenantPlugin);
 
 export const Notification = model<INotification>('Notification', notificationSchema);

@@ -26,4 +26,7 @@ const academicYearSchema = new Schema<IAcademicYear>(
 academicYearSchema.index({ orgId: 1, branchId: 1 });
 academicYearSchema.index({ orgId: 1, branchId: 1, isCurrent: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+academicYearSchema.plugin(tenantPlugin);
+
 export const AcademicYear = model<IAcademicYear>('AcademicYear', academicYearSchema);

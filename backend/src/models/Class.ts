@@ -38,4 +38,7 @@ const classSchema = new Schema<IClass>(
 classSchema.index({ orgId: 1, branchId: 1 });
 classSchema.index({ orgId: 1, branchId: 1, academicYearId: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+classSchema.plugin(tenantPlugin);
+
 export const Class = model<IClass>('Class', classSchema);

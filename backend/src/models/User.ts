@@ -5,6 +5,7 @@ export type UserRole =
   | 'super_admin'
   | 'group_admin'
   | 'branch_principal'
+  | 'coordinator'
   | 'teacher'
   | 'student'
   | 'accountant'
@@ -22,6 +23,7 @@ export interface IUser extends Document {
   active: boolean;
   lastLoginAt?: Date;
   passwordChangedAt?: Date;
+  mustChangePassword: boolean;
   comparePassword(candidate: string): Promise<boolean>;
   createdAt: Date;
   updatedAt: Date;
@@ -33,7 +35,7 @@ const userSchema = new Schema<IUser>(
     branchId: { type: Schema.Types.ObjectId, ref: 'Branch' },
     role: {
       type: String,
-      enum: ['super_admin', 'group_admin', 'branch_principal', 'teacher', 'student', 'accountant', 'it_admin'],
+      enum: ['super_admin', 'group_admin', 'branch_principal', 'coordinator', 'teacher', 'student', 'accountant', 'it_admin'],
       required: true,
     },
     name: { type: String, required: true, trim: true },
@@ -44,6 +46,7 @@ const userSchema = new Schema<IUser>(
     active: { type: Boolean, default: true },
     lastLoginAt: Date,
     passwordChangedAt: Date,
+    mustChangePassword: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -55,5 +58,8 @@ userSchema.index({ orgId: 1, active: 1 });
 userSchema.methods.comparePassword = async function (candidate: string): Promise<boolean> {
   return bcrypt.compare(candidate, this.passwordHash);
 };
+
+import { tenantPlugin } from '../utils/tenantPlugin';
+userSchema.plugin(tenantPlugin);
 
 export const User = model<IUser>('User', userSchema);

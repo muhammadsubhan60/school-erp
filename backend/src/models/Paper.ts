@@ -51,4 +51,7 @@ paperSchema.index({ orgId: 1, branchId: 1, month: 1, year: 1 });
 paperSchema.index({ orgId: 1, branchId: 1, teacherId: 1, month: 1, year: 1 });
 paperSchema.index({ orgId: 1, branchId: 1, paperType: 1, status: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+paperSchema.plugin(tenantPlugin);
+
 export const Paper = model<IPaper>('Paper', paperSchema);

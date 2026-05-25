@@ -78,8 +78,11 @@ const challanSchema = new Schema<IChallan>(
   { timestamps: true }
 );
 
-challanSchema.index({ orgId: 1, branchId: 1, studentId: 1, month: 1 });
+challanSchema.index({ orgId: 1, studentId: 1, month: 1 }, { unique: true });
 challanSchema.index({ orgId: 1, branchId: 1, month: 1, status: 1 });
 challanSchema.index({ orgId: 1, challanNo: 1 }, { unique: true });
+
+import { tenantPlugin } from '../utils/tenantPlugin';
+challanSchema.plugin(tenantPlugin);
 
 export const Challan = model<IChallan>('Challan', challanSchema);

@@ -29,4 +29,7 @@ const usageMetricSchema = new Schema<IUsageMetric>(
 usageMetricSchema.index({ orgId: 1, month: 1 });
 usageMetricSchema.index({ orgId: 1, branchId: 1, month: 1 }, { unique: true });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+usageMetricSchema.plugin(tenantPlugin);
+
 export const UsageMetric = model<IUsageMetric>('UsageMetric', usageMetricSchema);

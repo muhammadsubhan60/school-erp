@@ -52,4 +52,7 @@ const payrollSchema = new Schema<IPayroll>(
 payrollSchema.index({ orgId: 1, branchId: 1, staffId: 1, month: 1 }, { unique: true });
 payrollSchema.index({ orgId: 1, branchId: 1, month: 1, status: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+payrollSchema.plugin(tenantPlugin);
+
 export const Payroll = model<IPayroll>('Payroll', payrollSchema);

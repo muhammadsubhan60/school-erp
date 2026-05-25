@@ -69,4 +69,7 @@ branchSchema.index({ orgId: 1 });
 branchSchema.index({ orgId: 1, code: 1 }, { unique: true });
 branchSchema.index({ orgId: 1, status: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+branchSchema.plugin(tenantPlugin);
+
 export const Branch = model<IBranch>('Branch', branchSchema);

@@ -33,4 +33,7 @@ subjectTopicSchema.index(
   { unique: true }
 );
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+subjectTopicSchema.plugin(tenantPlugin);
+
 export const SubjectTopic = model<ISubjectTopic>('SubjectTopic', subjectTopicSchema);

@@ -39,4 +39,7 @@ staffAttendanceSchema.index({ orgId: 1, branchId: 1, date: -1 });
 staffAttendanceSchema.index({ orgId: 1, branchId: 1, staffId: 1, date: -1 });
 staffAttendanceSchema.index({ orgId: 1, branchId: 1, staffId: 1, date: 1 }, { unique: true });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+staffAttendanceSchema.plugin(tenantPlugin);
+
 export const StaffAttendance = model<IStaffAttendance>('StaffAttendance', staffAttendanceSchema);

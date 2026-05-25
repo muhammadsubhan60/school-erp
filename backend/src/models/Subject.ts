@@ -24,4 +24,7 @@ const subjectSchema = new Schema<ISubject>(
 subjectSchema.index({ orgId: 1, branchId: 1 });
 subjectSchema.index({ orgId: 1, branchId: 1, code: 1 }, { unique: true });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+subjectSchema.plugin(tenantPlugin);
+
 export const Subject = model<ISubject>('Subject', subjectSchema);

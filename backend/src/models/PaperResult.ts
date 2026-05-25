@@ -45,4 +45,7 @@ paperResultSchema.index({ orgId: 1, branchId: 1, studentId: 1, subjectId: 1 });
 paperResultSchema.index({ orgId: 1, branchId: 1, paperId: 1, studentId: 1 }, { unique: true });
 paperResultSchema.index({ orgId: 1, branchId: 1, studentId: 1, isWeak: 1 });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+paperResultSchema.plugin(tenantPlugin);
+
 export const PaperResult = model<IPaperResult>('PaperResult', paperResultSchema);

@@ -27,4 +27,7 @@ sectionSchema.index({ orgId: 1, branchId: 1 });
 sectionSchema.index({ orgId: 1, branchId: 1, classId: 1 });
 sectionSchema.index({ orgId: 1, branchId: 1, classId: 1, name: 1 }, { unique: true });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+sectionSchema.plugin(tenantPlugin);
+
 export const Section = model<ISection>('Section', sectionSchema);

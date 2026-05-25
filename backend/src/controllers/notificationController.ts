@@ -1,9 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import { Types } from 'mongoose';
+import { body, validationResult } from 'express-validator';
 import { Notification } from '../models/Notification';
 import { User } from '../models/User';
 import { AppError } from '../utils/errorHandler';
 import { emitToUser, emitToBranch } from '../socket';
+
+export const broadcastValidators = [
+  body('title').trim().notEmpty().withMessage('Title is required'),
+  body('message').trim().notEmpty().withMessage('Message is required'),
+  body('targetRole').optional().isString(),
+  body('targetStudents').optional().isArray(),
+  body('targetStudents.*').optional().isMongoId(),
+];
 
 export async function listNotifications(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -51,6 +60,9 @@ export async function markAllRead(req: Request, res: Response, next: NextFunctio
 
 export async function broadcast(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) { res.status(422).json({ success: false, errors: errors.array() }); return; }
+
     const { title, message, targetRole, targetStudents } = req.body;
     // targetRole: 'all' | 'teacher' | 'student' | specific role
     // targetStudents: array of user IDs for direct messages
@@ -63,7 +75,7 @@ export async function broadcast(req: Request, res: Response, next: NextFunction)
     if (targetStudents?.length) {
       recipientIds = (targetStudents as string[]).map(id => new Types.ObjectId(id));
     } else {
-      const userFilter: Record<string, unknown> = { branchId, active: true };
+      const userFilter: Record<string, unknown> = { orgId: req.orgId, branchId, active: true };
       if (targetRole && targetRole !== 'all') userFilter['role'] = targetRole;
       const users = await User.find(userFilter).select('_id').lean();
       recipientIds = users.map(u => u._id as Types.ObjectId);
@@ -98,7 +110,7 @@ export async function pushNotification(opts: {
   branchId: Types.ObjectId;
   recipientId: Types.ObjectId;
   senderId?: Types.ObjectId;
-  type: 'fee_due' | 'result_published' | 'assignment_graded' | 'assignment_created' | 'system';
+  type: 'fee_due' | 'result_published' | 'assignment_graded' | 'assignment_created' | 'resource_uploaded' | 'system';
   title: string;
   message: string;
   link?: string;

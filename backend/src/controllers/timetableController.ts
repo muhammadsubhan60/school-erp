@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
+import { Types } from 'mongoose';
 import { Timetable } from '../models/Timetable';
 
 export const createTimetableValidators = [
@@ -19,7 +20,7 @@ export async function createTimetable(req: Request, res: Response): Promise<void
   if (!errors.isEmpty()) { res.status(422).json({ success: false, errors: errors.array() }); return; }
 
   const { orgId, branchId } = req.user!;
-  const { classId, sectionId, academicYearId, slots, effectiveFrom, effectiveTo } = req.body;
+  const { classId, sectionId, academicYearId, slots, periodTimings, effectiveFrom, effectiveTo } = req.body;
 
   // Conflict detection: check if any teacher is double-booked for the same day+period
   const conflictCheck = await detectConflicts(orgId!, branchId!, slots, academicYearId as string, null);
@@ -37,6 +38,7 @@ export async function createTimetable(req: Request, res: Response): Promise<void
 
   const timetable = await Timetable.create({
     orgId, branchId, classId, sectionId, academicYearId, slots,
+    periodTimings: periodTimings ?? [],
     effectiveFrom: effectiveFrom ?? new Date(),
     effectiveTo,
     isActive: true,
@@ -52,24 +54,32 @@ async function detectConflicts(
   academicYearId: string,
   excludeTimetableId: string | null
 ): Promise<{ teacherId: string; dayOfWeek: number; periodNo: number }[]> {
+  const teacherSlotPairs = slots.map(s => ({
+    dayOfWeek: s.dayOfWeek,
+    periodNo: s.periodNo,
+    teacherId: new Types.ObjectId(s.teacherId),
+  }));
+
+  const conflicting = await Timetable.find({
+    orgId,
+    branchId,
+    academicYearId,
+    isActive: true,
+    ...(excludeTimetableId ? { _id: { $ne: excludeTimetableId } } : {}),
+    $or: teacherSlotPairs.map(s => ({
+      slots: { $elemMatch: { dayOfWeek: s.dayOfWeek, periodNo: s.periodNo, teacherId: s.teacherId } },
+    })),
+  }).select('slots').lean();
+
   const conflicts: { teacherId: string; dayOfWeek: number; periodNo: number }[] = [];
-
-  const existingFilter: Record<string, unknown> = { orgId, branchId, academicYearId, isActive: true };
-  if (excludeTimetableId) existingFilter._id = { $ne: excludeTimetableId };
-
-  const existing = await Timetable.find(existingFilter).lean();
-
-  for (const slot of slots) {
-    for (const tt of existing) {
-      const conflict = tt.slots.find(
-        (s) => s.dayOfWeek === slot.dayOfWeek && s.periodNo === slot.periodNo && String(s.teacherId) === slot.teacherId
+  for (const tt of conflicting) {
+    for (const s of teacherSlotPairs) {
+      const match = tt.slots.find(
+        ts => ts.dayOfWeek === s.dayOfWeek && ts.periodNo === s.periodNo && String(ts.teacherId) === String(s.teacherId)
       );
-      if (conflict) {
-        conflicts.push({ teacherId: slot.teacherId, dayOfWeek: slot.dayOfWeek, periodNo: slot.periodNo });
-      }
+      if (match) conflicts.push({ teacherId: String(s.teacherId), dayOfWeek: s.dayOfWeek, periodNo: s.periodNo });
     }
   }
-
   return conflicts;
 }
 
@@ -86,7 +96,7 @@ export async function getTimetable(req: Request, res: Response): Promise<void> {
     .populate('classId', 'name level')
     .populate('sectionId', 'name')
     .populate('slots.subjectId', 'name code')
-    .populate('slots.teacherId', 'profile.name')
+    .populate('slots.teacherId', 'name')
     .lean();
 
   // Filter by teacher if requested
@@ -115,8 +125,10 @@ export async function updateTimetable(req: Request, res: Response): Promise<void
     }
   }
 
+  const { periodTimings: updatedTimings } = req.body;
   const update: Record<string, unknown> = {};
   if (slots) update.slots = slots;
+  if (updatedTimings !== undefined) update.periodTimings = updatedTimings;
   if (effectiveTo) update.effectiveTo = effectiveTo;
 
   const tt = await Timetable.findOneAndUpdate({ _id: req.params.id, orgId, branchId }, update, { new: true });

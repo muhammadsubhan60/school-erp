@@ -63,4 +63,7 @@ resultSchema.index({ orgId: 1, branchId: 1, examId: 1 });
 resultSchema.index({ orgId: 1, branchId: 1, studentId: 1 });
 resultSchema.index({ examId: 1, studentId: 1 }, { unique: true });
 
+import { tenantPlugin } from '../utils/tenantPlugin';
+resultSchema.plugin(tenantPlugin);
+
 export const Result = model<IResult>('Result', resultSchema);
